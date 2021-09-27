@@ -17,7 +17,9 @@
 #define MAX_STRLEN	(17)
 #define HISTORY_LEN	(12)
 #define SAMPLE_DELAY	(5000)
-#define HISTORY_PERIOD	(720)
+// number of sample delays forming one hours
+// time correction included
+#define HISTORY_PERIOD	(720-58)
 
 #pragma config CP=OFF
 #pragma config CPD=OFF
@@ -259,7 +261,7 @@ void main(void)
 		++counter;
 		if (HISTORY_PERIOD == counter)
 		{
-			counter == 0;
+			counter = 0;
 		}
 		// state update
 		state = (state + 1) % 6;
