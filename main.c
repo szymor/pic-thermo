@@ -1,11 +1,8 @@
 #include <xc.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #define _XTAL_FREQ		(4000000)
 
-#define LED_PIN		RB5
-#define LED_TRIS	TRISB5
 #define OW_PIN		RB5
 #define OW_TRIS		TRISB5
 
@@ -16,6 +13,11 @@
 #define CLK_MASK	_PORTA_RA7_MASK
 #define BL_PIN		RA6
 #define BL_TRIS		TRISA6
+
+#define MAX_STRLEN	(17)
+#define HISTORY_LEN	(12)
+#define SAMPLE_DELAY	(5000)
+#define HISTORY_PERIOD	(720)
 
 #pragma config CP=OFF
 #pragma config CPD=OFF
@@ -126,7 +128,25 @@ const uint8_t charset[][5] = {
   { 0x00, 0x00, 0x00, 0x00, 0x00 }   // 7f
 };
 
+const char strings[][17] = {
+	" 1 hour ago     ",
+	" 2 hours ago    ",
+	" 3 hours ago    ",
+	" 4 hours ago    ",
+	" 5 hours ago    ",
+	" 6 hours ago    ",
+	" 7 hours ago    ",
+	" 8 hours ago    ",
+	" 9 hours ago    ",
+	" 10 hours ago   ",
+	" 11 hours ago   ",
+	" 12 hours ago   "
+};
+
+int16_t history[HISTORY_LEN] = { 0 };
+uint8_t state = 0;
 uint8_t shadowA = 0;
+uint16_t counter = 0;
 
 void send_byte(uint8_t byte);
 void setb(uint8_t msk) { shadowA |= msk; PORTA = shadowA; }
@@ -139,6 +159,9 @@ void ow_write1(void);
 int ow_read(void);
 void ow_send_byte(uint8_t byte);
 uint8_t ow_recv_byte(void);
+
+void temp2str(int16_t temp, char *eos);
+int16_t ctof(int16_t tempc);
 
 void main(void)
 {
@@ -183,7 +206,7 @@ void main(void)
 		ow_send_byte(0xcc);
 		// ds18b20 - convert T
 		ow_send_byte(0x44);
-		__delay_ms(2000);
+		__delay_ms(SAMPLE_DELAY);
 		// ds18b20 - reset
 		ow_reset();
 		// ds18b20 - skip ROM
@@ -192,29 +215,55 @@ void main(void)
 		ow_send_byte(0xbe);
 		uint8_t tlsb = ow_recv_byte();
 		uint8_t tmsb = ow_recv_byte();
-		uint8_t sign = tmsb & 0xf0;
-		uint8_t leftcomma = ((tmsb & 0x07) << 4) + (tlsb >> 4);
-		uint8_t rightcomma = (100 * (tlsb & 0x0f)) >> 4;
-		char buff[16];
-		sprintf(buff, "R: %02x %02x    ", tmsb, tlsb);
-		write(0, 0, buff);
-		char buff[16];
-		sprintf(buff, "T: %d.%02d^C    ", leftcomma, rightcomma);
-		if (sign)
-			buff[2] = '-';
+		int16_t temp = (tmsb << 8) | tlsb;
+		// update history if needed
+		if (0 == counter)
+		{
+			for (int i = HISTORY_LEN - 1; i > 0; --i)
+			{
+				history[i] = history[i - 1];
+			}
+			history[0] = temp;
+		}
+		// display things
+		uint8_t offset1 = state * 2;
+		uint8_t offset2 = offset1 + 1;
+		const char *text1 = strings[offset1];
+		const char *text2 = strings[offset2];
+		int16_t history1 = history[offset1];
+		int16_t history2 = history[offset2];
+		char buff[17] = "                ";
+		char *eos;
+		// ---
+		write(0, 0, " Now:     ^C/^F ");
+		eos = buff + 6;
+		temp2str(temp, eos);
+		eos = buff + 14;
+		temp2str(ctof(temp), eos);
 		write(0, 1, buff);
+		// ---
+		write(0, 2, text1);
+		eos = buff + 6;
+		temp2str(history1, eos);
+		eos = buff + 14;
+		temp2str(ctof(history1), eos);
+		write(0, 3, buff);
+		// ---
+		write(0, 4, text2);
+		eos = buff + 6;
+		temp2str(history2, eos);
+		eos = buff + 14;
+		temp2str(ctof(history2), eos);
+		write(0, 5, buff);
+		// counter update
+		++counter;
+		if (HISTORY_PERIOD == counter)
+		{
+			counter == 0;
+		}
+		// state update
+		state = (state + 1) % 6;
 	}
-
-/*
-	LED_TRIS = 0;
-	while (1)
-	{
-		LED_PIN = 0;
-		__delay_ms(500);
-		LED_PIN = 1;
-		__delay_ms(500);
-	}
-*/
 }
 
 void send_byte(uint8_t byte)
@@ -323,4 +372,48 @@ uint8_t ow_recv_byte(void)
 		ret |= ow_read() ? 0x80 : 0;
 	}
 	return ret;
+}
+
+void temp2str(int16_t temp, char *eos)
+{
+	temp *= 10;
+	temp >>= 4;
+	int8_t chars_left = 6;
+	char minus = temp < 0;
+	if (minus)
+	{
+		temp = -temp;
+	}
+	char dot = 1;
+	do
+	{
+		int8_t digit = temp % 10;
+		*eos = digit + 0x30;
+		--eos;
+		--chars_left;
+		temp /= 10;
+		if (dot && (temp || digit))
+		{
+			*eos = '.';
+			--eos;
+			--chars_left;
+			dot = 0;
+		}
+	} while (0 != temp);
+	if (minus)
+	{
+		*eos = '-';
+		--eos;
+		--chars_left;
+	}
+	while (chars_left--)
+	{
+		*eos = ' ';
+		--eos;
+	}
+}
+
+int16_t ctof(int16_t tempc)
+{
+	return (tempc * 9 / 5 + 32*16);
 }
